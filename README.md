@@ -1,4 +1,4 @@
-# Quiz Platform
+# Coding-Platform
 A platform on which we can conduct quiz.
 
 ## Front End
