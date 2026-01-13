@@ -4,6 +4,8 @@ import 'codemirror/lib/codemirror.css';
 import 'codemirror/mode/javascript/javascript';
 import 'codemirror/mode/python/python';
 import 'codemirror/mode/clike/clike';
+import detectDevTools from 'devtools-detect';
+import Profile from './components/Profile';
 import './App.css';
 
 function App() {
@@ -33,7 +35,9 @@ function twoSum(nums, target) {
       sampleOutput: '[0,1]',
       testCases: [
         { input: 'nums = [2,7,11,15], target = 9', expected: '[0,1]' },
-        { input: 'nums = [3,2,4], target = 6', expected: '[1,2]' }
+        { input: 'nums = [3,2,4], target = 6', expected: '[1,2]' },
+        { stdin: '2 7 11 15\n9', expected: '0 1' },
+        { stdin: '3 2 4\n6', expected: '1 2' }
       ],
       templates: {
         javascript: `function twoSum(nums, target) {
@@ -83,7 +87,8 @@ public:
       sampleInput: 's = ["h","e","l","l","o"]',
       sampleOutput: '["o","l","l","e","h"]',
       testCases: [
-        { input: 's = ["h","e","l","l","o"]', expected: '["o","l","l","e","h"]' }
+        { input: 's = ["h","e","l","l","o"]', expected: '["o","l","l","e","h"]' },
+        { stdin: 'h e l l o', expected: 'o l l e h' }
       ],
       templates: {
         javascript: `function reverseString(s) {
@@ -147,10 +152,15 @@ public:
     };
 
     // Dev tools detection
-    // devtools.on('open', () => {
-    //   setViolations(prev => prev + 1);
-    //   alert('Developer tools detected! This is a violation.');
-    // });
+    const handleDevToolsChange = () => {
+      if (detectDevTools.isOpen) {
+        setViolations(prev => prev + 1);
+        alert('Developer tools detected! This is a violation.');
+      }
+    };
+
+    // Set up interval to periodically check for dev tools
+    const devToolsInterval = setInterval(handleDevToolsChange, 500);
 
     document.addEventListener('visibilitychange', handleVisibilityChange);
     document.addEventListener('contextmenu', handleContextMenu);
@@ -162,7 +172,7 @@ public:
       document.removeEventListener('contextmenu', handleContextMenu);
       document.removeEventListener('copy', handleCopyPaste);
       document.removeEventListener('paste', handleCopyPaste);
-      // devtools.off('open');
+      clearInterval(devToolsInterval);
     };
   }, []);
 
@@ -197,50 +207,136 @@ public:
   };
 
   const runCode = () => {
-    if (language === 'javascript') {
-      try {
-        // eslint-disable-next-line no-eval
-        eval(code); // define the function in global scope
-        const funcName = code.match(/function (\w+)/)[1];
-        const func = window[funcName];
-        let results = [];
-        for (let i = 0; i < problem.testCases.length; i++) {
-          const test = problem.testCases[i];
-          const result = problem.runner(func, test);
-          const passed = JSON.stringify(result) === test.expected;
-          results.push(`Test ${i + 1}: ${passed ? 'PASS' : 'FAIL'} - Expected: ${test.expected}, Got: ${JSON.stringify(result)}`);
-        }
-        setOutput(results.join('\n'));
-      } catch (e) {
-        setOutput('Error: ' + e.message);
-      }
-    } else {
-      // Mock for other languages - in production, send to backend compiler
-      setOutput(`Running ${language} code...\nCompilation and execution for ${language} is not implemented in this prototype.\nIn a real platform, this would be handled by a secure backend (e.g., using Docker containers or Judge0 API).\n\nFor demo, assuming all tests pass: 100%`);
-    }
-  };
+    const buildTests = () => {
+      const tests = [];
+      for (const tc of problem.testCases) {
+        // Check if the test case has direct input format
+        if (tc.stdin) {
+          // For stdin-based test cases
+          tests.push({
+            input: tc.stdin,  // Direct input for stdin
+            expected: tc.expected
+          });
+        } else {
+          // For function-based test cases (existing format)
+          // attempt to extract JSON-like parts from input string
+          const input = tc.input || '';
+          const arrMatch = input.match(/(\[.*\])/);
+          const objMatch = input.match(/(\{.*\})/);
+          let args = [];
+          if (arrMatch) {
+            try { const parsed = JSON.parse(arrMatch[1]); args.push(parsed); } catch (e) { args.push(arrMatch[1]); }
+          }
+          // look for a numeric target
+          const numMatch = input.match(/target\s*=\s*([\-]?[0-9]+)/);
+          if (numMatch) args.push(Number(numMatch[1]));
+          // fallback: if no args extracted, try splitting by comma values
+          if (args.length === 0 && input.length) args = [input];
 
-  const submitCode = () => {
+          // parse expected
+          let expected = tc.expected;
+          if (typeof expected === 'string') {
+            const t = expected.trim();
+            try { if (t.startsWith('[') || t.startsWith('{') || t === 'true' || t === 'false' || /^-?\d+$/.test(t)) expected = JSON.parse(t); } catch (e) { /* keep string */ }
+          }
+          tests.push({ args, expected, ...tc }); // Include other properties from tc
+        }
+      }
+      return tests;
+    };
+
+    // For JS keep local eval (fast) but still support backend path if user wants
     if (language === 'javascript') {
       try {
         // eslint-disable-next-line no-eval
         eval(code);
-        const funcName = code.match(/function (\w+)/)[1];
-        const func = window[funcName];
-        let passed = 0;
-        for (let test of problem.testCases) {
-          const result = problem.runner(func, test);
-          if (JSON.stringify(result) === test.expected) passed++;
+        const funcNameMatch = code.match(/function\s+(\w+)/) || code.match(/(\w+)\s*=\s*\(/);
+        const funcName = funcNameMatch ? funcNameMatch[1] : null;
+        const func = funcName ? window[funcName] : null;
+        if (typeof func === 'function') {
+          const results = [];
+          const tests = buildTests();
+          for (let i = 0; i < tests.length; i++) {
+            try {
+              const out = func(...tests[i].args);
+              const passed = JSON.stringify(out) === JSON.stringify(tests[i].expected);
+              results.push(`Test ${i+1}: ${passed ? 'PASS' : 'FAIL'} - Expected: ${JSON.stringify(tests[i].expected)}, Got: ${JSON.stringify(out)}`);
+            } catch (e) { results.push(`Test ${i+1}: ERROR - ${e.message}`); }
+          }
+          setOutput(results.join('\n'));
+          return;
         }
-        const score = (passed / problem.testCases.length) * 100;
-        setSubmissions(prev => ({ ...prev, [currentProblem]: { code, score, language } }));
-        setOutput(`Submitted! Score: ${score}% (${passed}/${problem.testCases.length} tests passed)`);
       } catch (e) {
-        setOutput('Error: ' + e.message);
+        setOutput('Local JS eval error: ' + e.message + '\nFalling back to server execution...');
       }
-    } else {
-      setOutput('Submission only available for JavaScript in this prototype. For other languages, a backend compiler is required.');
     }
+
+    // For non-JS (and fallback JS), send to backend runner (Docker-enabled)
+    (async () => {
+      setOutput('Running on server...');
+      const tests = buildTests();
+      const funcName = null; // server will try to handle based on language
+      try {
+        const resp = await fetch('/api/run', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ language, code, funcName, tests }) });
+        const data = await resp.json();
+        if (data.error) {
+          setOutput('Server error: ' + data.error);
+          return;
+        }
+        if (!data.results) { setOutput('No results from runner'); return; }
+        const lines = data.results.map((r, i) => {
+          if (r.error) return `Test ${i+1}: ERROR - ${r.error}`;
+          return `Test ${i+1}: ${r.passed ? 'PASS' : 'FAIL'} - Expected: ${JSON.stringify(r.expected)}, Got: ${JSON.stringify(r.output)}`;
+        });
+        setOutput(lines.join('\n'));
+      } catch (e) { setOutput('Network/runner error: ' + e.message); }
+    })();
+  };
+
+  const submitCode = async () => {
+    setOutput('Submitting...');
+    const buildTests = () => {
+      const tests = [];
+      for (const tc of problem.testCases) {
+        // Check if the test case has direct input format
+        if (tc.stdin) {
+          // For stdin-based test cases
+          tests.push({
+            input: tc.stdin,  // Direct input for stdin
+            expected: tc.expected
+          });
+        } else {
+          // For function-based test cases (existing format)
+          const input = tc.input || '';
+          const arrMatch = input.match(/(\[.*\])/);
+          let args = [];
+          if (arrMatch) {
+            try { const parsed = JSON.parse(arrMatch[1]); args.push(parsed); } catch (e) { args.push(arrMatch[1]); }
+          }
+          const numMatch = input.match(/target\s*=\s*([\-]?[0-9]+)/);
+          if (numMatch) args.push(Number(numMatch[1]));
+          if (args.length === 0 && input.length) args = [input];
+          let expected = tc.expected;
+          if (typeof expected === 'string') {
+            const t = expected.trim();
+            try { if (t.startsWith('[') || t.startsWith('{') || t === 'true' || t === 'false' || /^-?\d+$/.test(t)) expected = JSON.parse(t); } catch (e) { }
+          }
+          tests.push({ args, expected, ...tc }); // Include other properties from tc
+        }
+      }
+      return tests;
+    };
+    const prepared = buildTests();
+    try {
+      const resp = await fetch('/api/run', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ language, code, funcName: null, tests: prepared }) });
+      const data = await resp.json();
+      if (data.error) { setOutput('Runner error: ' + data.error); return; }
+      const passedCount = (data.results || []).filter(r => r.passed).length;
+      const score = Math.round((passedCount / (prepared.length || 1)) * 100);
+      const submitResp = await fetch('/api/submit', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ problemId: currentProblem, language, code, score }) });
+      const submitData = await submitResp.json();
+      if (submitData.error) setOutput('Submit error: ' + submitData.error); else setOutput(`Submitted! Score: ${score}% (${passedCount}/${prepared.length}) - id ${submitData.id}`);
+    } catch (e) { setOutput('Network/submit error: ' + e.message); }
   };
 
   const formatTime = (seconds) => {
@@ -257,6 +353,7 @@ public:
           <button onClick={() => setCurrentView('home')}>Home</button>
           <button onClick={() => setCurrentView('contests')}>Contests</button>
           <button onClick={() => setCurrentView('submissions')}>My Submissions</button>
+          <button onClick={() => setCurrentView('profile')}>Profile</button>
           {currentView === 'editor' && <span className="timer">Time Left: {formatTime(timeLeft)}</span>}
           {violations > 0 && <span className="violations">Violations: {violations}</span>}
           {!isFullscreen && <button onClick={enterFullscreen}>Enter Fullscreen</button>}
@@ -311,46 +408,75 @@ public:
               <pre>{problem.sampleOutput}</pre>
             </div>
             <div className="code-section">
-            <div className="code-header">
-              <div>
-                <button onClick={() => setCurrentProblem(Math.max(0, currentProblem - 1))}>Prev</button>
-                <span>Problem {currentProblem + 1} of {problems.length}</span>
-                <button onClick={() => setCurrentProblem(Math.min(problems.length - 1, currentProblem + 1))}>Next</button>
+              <div className="code-header">
+                <div>
+                  <button onClick={() => setCurrentProblem(Math.max(0, currentProblem - 1))}>Prev</button>
+                  <span>Problem {currentProblem + 1} of {problems.length}</span>
+                  <button onClick={() => setCurrentProblem(Math.min(problems.length - 1, currentProblem + 1))}>Next</button>
+                </div>
+                <select value={language} onChange={(e) => setLanguage(e.target.value)}>
+                  <option value="javascript">JavaScript</option>
+                  <option value="python">Python</option>
+                  <option value="c">C</option>
+                  <option value="cpp">C++</option>
+                  <option value="java">Java</option>
+                </select>
+                <button onClick={runCode}>Run Code</button>
+                <button onClick={submitCode}>Submit</button>
               </div>
-              <select value={language} onChange={(e) => setLanguage(e.target.value)}>
-                <option value="javascript">JavaScript</option>
-                <option value="python">Python</option>
-                <option value="c">C</option>
-                <option value="cpp">C++</option>
-                <option value="java">Java</option>
-              </select>
-              <button onClick={runCode}>Run Code</button>
-              <button onClick={submitCode}>Submit</button>
-            </div>
-              <CodeMirror
-                value={code}
-                options={{
-                  mode: language === 'python' ? 'python' : language === 'javascript' ? 'javascript' : 'clike',
-                  theme: 'default',
-                  lineNumbers: true,
-                  readOnly: false,
-                  tabSize: 2,
-                  indentWithTabs: false,
-                }}
-                onChange={(editor, data, value) => {
-                  setCode(value);
-                }}
-                onKeyDown={(editor, event) => {
-                  if ((event.ctrlKey || event.metaKey) && ['c', 'v', 'x'].includes(event.key.toLowerCase())) {
-                    event.preventDefault();
-                    setViolations(prev => prev + 1);
-                    alert('Copy-paste disabled!');
-                  }
-                }}
-              />
-              <div className="output">
-                <h3>Output:</h3>
-                <pre>{output}</pre>
+              <div className="code-editor-container">
+                <div style={{ display: 'flex', flexDirection: 'column', flex: 1 }}>
+                  <CodeMirror
+                    value={code}
+                    options={{
+                      mode: language === 'python' ? 'python' : language === 'javascript' ? 'javascript' : 'clike',
+                      theme: 'default',
+                      lineNumbers: true,
+                      readOnly: false,
+                      tabSize: 2,
+                      indentWithTabs: false,
+                    }}
+                    onChange={(editor, data, value) => {
+                      setCode(value);
+                    }}
+                    onKeyDown={(editor, event) => {
+                      if ((event.ctrlKey || event.metaKey) && ['c', 'v', 'x'].includes(event.key.toLowerCase())) {
+                        event.preventDefault();
+                        setViolations(prev => prev + 1);
+                        alert('Copy-paste disabled!');
+                      }
+                    }}
+                  />
+                  <div className="output">
+                    <h3>Output:</h3>
+                    <pre>{output}</pre>
+                  </div>
+                </div>
+                <div className="test-cases-section">
+                  <h3>Test Cases:</h3>
+                  <div className="test-cases-list">
+                    {problem.testCases.map((tc, index) => (
+                      <div key={index} className="test-case">
+                        <div className="test-case-header">
+                          <strong>Test Case {index + 1}:</strong>
+                          {tc.stdin ? <span> (Stdin Input)</span> : <span> (Function Args)</span>}
+                        </div>
+                        <div className="test-case-content">
+                          {tc.stdin ? (
+                            <div>
+                              <div><strong>Input:</strong> {tc.stdin.split('\n').map((line, i) => <div key={i}>{line}</div>)}</div>
+                            </div>
+                          ) : (
+                            <div>
+                              <div><strong>Input:</strong> {tc.input}</div>
+                            </div>
+                          )}
+                          <div><strong>Expected:</strong> {JSON.stringify(tc.expected)}</div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
               </div>
             </div>
           </section>
@@ -364,7 +490,7 @@ public:
               <ul>
                 {Object.entries(submissions).map(([idx, sub]) => (
                   <li key={idx}>
-                    <strong>{problems[parseInt(idx)].title}</strong>: {sub.score}% 
+                    <strong>{problems[parseInt(idx)].title}</strong>: {sub.score}%
                     <details>
                       <summary>Code</summary>
                       <pre>{sub.code}</pre>
@@ -373,6 +499,11 @@ public:
                 ))}
               </ul>
             )}
+          </section>
+        )}
+        {currentView === 'profile' && (
+          <section className="profile">
+            <Profile />
           </section>
         )}
       </main>

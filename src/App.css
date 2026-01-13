@@ -74,13 +74,13 @@ li:hover {
 
 .editor {
   display: flex;
-  flex-direction: row;
+  flex-direction: column;
   height: calc(100vh - 60px);
   gap: 10px;
 }
 
 .problem-statement {
-  flex: 1;
+  flex: 0 0 30%;
   padding: 20px;
   overflow-y: auto;
   background: #f9f9f9;
@@ -98,7 +98,7 @@ li:hover {
 }
 
 .code-section {
-  flex: 1.5;
+  flex: 1;
   display: flex;
   flex-direction: column;
   background: #fff;
@@ -124,6 +124,13 @@ li:hover {
   cursor: pointer;
 }
 
+.code-editor-container {
+  flex: 1;
+  display: flex;
+  flex-direction: row;
+  gap: 10px;
+}
+
 .CodeMirror {
   height: auto !important;
   flex: 1;
@@ -144,6 +151,46 @@ li:hover {
 .output pre {
   margin: 0;
   white-space: pre-wrap;
+}
+
+.test-cases-section {
+  flex: 0 0 200px;
+  padding: 15px;
+  background: #f0f0f0;
+  border-top: 1px solid #ddd;
+  overflow-y: auto;
+}
+
+.test-cases-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.test-case {
+  background: #fff;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  padding: 10px;
+}
+
+.test-case-header {
+  font-weight: bold;
+  margin-bottom: 5px;
+  color: #333;
+}
+
+.test-case-content {
+  font-size: 14px;
+  line-height: 1.4;
+}
+
+.test-case-content div {
+  margin: 3px 0;
+}
+
+.test-case-content strong {
+  color: #555;
 }
 
 .submissions ul {
