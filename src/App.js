@@ -4,6 +4,7 @@ import 'codemirror/lib/codemirror.css';
 import 'codemirror/mode/javascript/javascript';
 import 'codemirror/mode/python/python';
 import 'codemirror/mode/clike/clike';
+import detectDevTools from 'devtools-detect';
 import './App.css';
 
 function App() {
@@ -18,7 +19,7 @@ function twoSum(nums, target) {
   const [language, setLanguage] = useState('javascript');
   const [output, setOutput] = useState('');
   const [currentProblem, setCurrentProblem] = useState(0);
-  const [submissions, setSubmissions] = useState({}); // problem index -> submitted code
+  const [submissions, setSubmissions] = useState({}); 
   const problems = [
     {
       title: 'Two Sum',
@@ -33,7 +34,9 @@ function twoSum(nums, target) {
       sampleOutput: '[0,1]',
       testCases: [
         { input: 'nums = [2,7,11,15], target = 9', expected: '[0,1]' },
-        { input: 'nums = [3,2,4], target = 6', expected: '[1,2]' }
+        { input: 'nums = [3,2,4], target = 6', expected: '[1,2]' },
+        { stdin: '2 7 11 15\n9', expected: '0 1' },
+        { stdin: '3 2 4\n6', expected: '1 2' }
       ],
       templates: {
         javascript: `function twoSum(nums, target) {
@@ -83,7 +86,8 @@ public:
       sampleInput: 's = ["h","e","l","l","o"]',
       sampleOutput: '["o","l","l","e","h"]',
       testCases: [
-        { input: 's = ["h","e","l","l","o"]', expected: '["o","l","l","e","h"]' }
+        { input: 's = ["h","e","l","l","o"]', expected: '["o","l","l","e","h"]' },
+        { stdin: 'h e l l o', expected: 'o l l e h' }
       ],
       templates: {
         javascript: `function reverseString(s) {
@@ -179,8 +183,9 @@ public:
     if (currentView === 'editor' && problem.templates && problem.templates[language]) {
       setCode(problem.templates[language]);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    
   }, [language, currentProblem, currentView]);
+
 
   const enterFullscreen = () => {
     if (document.documentElement.requestFullscreen) {
@@ -196,50 +201,102 @@ public:
     }
   };
 
-  const runCode = () => {
-    if (language === 'javascript') {
-      try {
-        // eslint-disable-next-line no-eval
-        eval(code); // define the function in global scope
-        const funcName = code.match(/function (\w+)/)[1];
-        const func = window[funcName];
-        let results = [];
-        for (let i = 0; i < problem.testCases.length; i++) {
-          const test = problem.testCases[i];
-          const result = problem.runner(func, test);
-          const passed = JSON.stringify(result) === test.expected;
-          results.push(`Test ${i + 1}: ${passed ? 'PASS' : 'FAIL'} - Expected: ${test.expected}, Got: ${JSON.stringify(result)}`);
-        }
-        setOutput(results.join('\n'));
-      } catch (e) {
-        setOutput('Error: ' + e.message);
+  // Define a dynamic base URL for API calls
+  const API_BASE_URL = process.env.REACT_APP_API_BASE_URL || 'http://localhost:3001';
+
+  // Update runCode function to use dynamic base URL
+  const runCode = async () => {
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/run`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          language,
+          code,
+          tests: problems[currentProblem].testCases,
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error(`Server error: ${response.statusText}`);
       }
-    } else {
-      // Mock for other languages - in production, send to backend compiler
-      setOutput(`Running ${language} code...\nCompilation and execution for ${language} is not implemented in this prototype.\nIn a real platform, this would be handled by a secure backend (e.g., using Docker containers or Judge0 API).\n\nFor demo, assuming all tests pass: 100%`);
+
+      const data = await response.json();
+      setOutput(JSON.stringify(data.results, null, 2));
+    } catch (error) {
+      setOutput(`Error: ${error.message}`);
     }
   };
 
-  const submitCode = () => {
-    if (language === 'javascript') {
-      try {
-        // eslint-disable-next-line no-eval
-        eval(code);
-        const funcName = code.match(/function (\w+)/)[1];
-        const func = window[funcName];
-        let passed = 0;
-        for (let test of problem.testCases) {
-          const result = problem.runner(func, test);
-          if (JSON.stringify(result) === test.expected) passed++;
+  // Update submitCode function to use dynamic base URL
+  const submitCode = async () => {
+    setOutput('Submitting...');
+    const buildTests = () => {
+      const tests = [];
+      for (const tc of problem.testCases) {
+        if (tc.stdin) {
+          tests.push({ input: tc.stdin, expected: tc.expected });
+        } else {
+          const input = tc.input || '';
+          const args = [];
+          const arrMatch = input.match(/(\[.*\])/);
+          if (arrMatch) {
+            try {
+              args.push(JSON.parse(arrMatch[1]));
+            } catch (e) {
+              args.push(arrMatch[1]);
+            }
+          }
+          const numMatch = input.match(/target\s*=\s*([\-]?[0-9]+)/);
+          if (numMatch) args.push(Number(numMatch[1]));
+          if (args.length === 0 && input.length) args.push(input);
+          tests.push({ args, expected: tc.expected });
         }
-        const score = (passed / problem.testCases.length) * 100;
-        setSubmissions(prev => ({ ...prev, [currentProblem]: { code, score, language } }));
-        setOutput(`Submitted! Score: ${score}% (${passed}/${problem.testCases.length} tests passed)`);
-      } catch (e) {
-        setOutput('Error: ' + e.message);
       }
-    } else {
-      setOutput('Submission only available for JavaScript in this prototype. For other languages, a backend compiler is required.');
+      return tests;
+    };
+
+    const prepared = buildTests();
+    try {
+      const resp = await fetch(`${API_BASE_URL}/api/run`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ language, code, funcName: null, tests: prepared }),
+      });
+
+      if (!resp.ok) {
+        throw new Error(`Server error: ${resp.statusText}`);
+      }
+
+      const data = await resp.json();
+      if (data.error) {
+        setOutput(`Runner error: ${data.error}`);
+        return;
+      }
+
+      const passedCount = (data.results || []).filter(r => r.passed).length;
+      const score = Math.round((passedCount / (prepared.length || 1)) * 100);
+
+      const submitResp = await fetch(`${API_BASE_URL}/api/submit`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ problemId: currentProblem, language, code, score }),
+      });
+
+      if (!submitResp.ok) {
+        throw new Error(`Server error: ${submitResp.statusText}`);
+      }
+
+      const submitData = await submitResp.json();
+      if (submitData.error) {
+        setOutput(`Submit error: ${submitData.error}`);
+      } else {
+        setOutput(`Submitted! Score: ${score}% (${passedCount}/${prepared.length}) - id ${submitData.id}`);
+      }
+    } catch (e) {
+      setOutput(`Network/submit error: ${e.message}`);
     }
   };
 
@@ -311,48 +368,77 @@ public:
               <pre>{problem.sampleOutput}</pre>
             </div>
             <div className="code-section">
-            <div className="code-header">
-              <div>
-                <button onClick={() => setCurrentProblem(Math.max(0, currentProblem - 1))}>Prev</button>
-                <span>Problem {currentProblem + 1} of {problems.length}</span>
-                <button onClick={() => setCurrentProblem(Math.min(problems.length - 1, currentProblem + 1))}>Next</button>
+              <div className="code-header">
+                <div>
+                  <button onClick={() => setCurrentProblem(Math.max(0, currentProblem - 1))}>Prev</button>
+                  <span>Problem {currentProblem + 1} of {problems.length}</span>
+                  <button onClick={() => setCurrentProblem(Math.min(problems.length - 1, currentProblem + 1))}>Next</button>
+                </div>
+                <select value={language} onChange={(e) => setLanguage(e.target.value)}>
+                  <option value="javascript">JavaScript</option>
+                  <option value="python">Python</option>
+                  <option value="c">C</option>
+                  <option value="cpp">C++</option>
+                  <option value="java">Java</option>
+                </select>
+                <button onClick={runCode}>Run Code</button>
+                <button onClick={submitCode}>Submit</button>
               </div>
-              <select value={language} onChange={(e) => setLanguage(e.target.value)}>
-                <option value="javascript">JavaScript</option>
-                <option value="python">Python</option>
-                <option value="c">C</option>
-                <option value="cpp">C++</option>
-                <option value="java">Java</option>
-              </select>
-              <button onClick={runCode}>Run Code</button>
-              <button onClick={submitCode}>Submit</button>
-            </div>
-              <CodeMirror
-                value={code}
-                options={{
-                  mode: language === 'python' ? 'python' : language === 'javascript' ? 'javascript' : 'clike',
-                  theme: 'default',
-                  lineNumbers: true,
-                  readOnly: false,
-                  tabSize: 2,
-                  indentWithTabs: false,
-                }}
-                onChange={(editor, data, value) => {
-                  setCode(value);
-                }}
-                onKeyDown={(editor, event) => {
-                  if ((event.ctrlKey || event.metaKey) && ['c', 'v', 'x'].includes(event.key.toLowerCase())) {
-                    event.preventDefault();
-                    setViolations(prev => prev + 1);
-                    alert('Copy-paste disabled!');
-                  }
-                }}
-              />
-              <div className="output">
-                <h3>Output:</h3>
-                <pre>{output}</pre>
+              <div className="code-editor-container">
+                <div style={{ display: 'flex', flexDirection: 'column', flex: 1 }}>
+                  <CodeMirror
+                    value={code}
+                    options={{
+                      mode: language === 'python' ? 'python' : language === 'javascript' ? 'javascript' : 'clike',
+                      theme: 'default',
+                      lineNumbers: true,
+                      readOnly: false,
+                      tabSize: 2,
+                      indentWithTabs: false,
+                    }}
+                    onChange={(editor, data, value) => {
+                      setCode(value);
+                    }}
+                    onKeyDown={(editor, event) => {
+                      if ((event.ctrlKey || event.metaKey) && ['c', 'v', 'x'].includes(event.key.toLowerCase())) {
+                        event.preventDefault();
+                        setViolations(prev => prev + 1);
+                        alert('Copy-paste disabled!');
+                      }
+                    }}
+                  />
+                  <div className="output">
+                    <h3>Output:</h3>
+                    <pre>{output}</pre>
+                  </div>
+                </div>
+                <div className="test-cases-section">
+                <h3>Test Cases:</h3>
+                <div className="test-cases-list">
+                  {problem.testCases.map((tc, index) => (
+                    <div key={index} className="test-case">
+                      <div className="test-case-header">
+                        <strong>Test Case {index + 1}:</strong>
+                        {tc.stdin ? <span> (Stdin Input)</span> : <span> (Function Args)</span>}
+                      </div>
+                      <div className="test-case-content">
+                        {tc.stdin ? (
+                          <div>
+                            <div><strong>Input:</strong> {tc.stdin.split('\n').map((line, i) => <div key={i}>{line}</div>)}</div>
+                          </div>
+                        ) : (
+                          <div>
+                            <div><strong>Input:</strong> {tc.input}</div>
+                          </div>
+                        )}
+                        <div><strong>Expected:</strong> {JSON.stringify(tc.expected)}</div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
               </div>
-            </div>
+              </div>
+            </div> 
           </section>
         )}
         {currentView === 'submissions' && (
@@ -380,4 +466,4 @@ public:
   );
 }
 
-export default App;
+ export default App;
