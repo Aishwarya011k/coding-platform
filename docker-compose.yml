@@ -1,0 +1,29 @@
+services:
+  compiler:
+    build:
+      context: .
+      dockerfile: compiler/Dockerfile
+    volumes:
+      - ./:/work:cached
+      - node_modules:/work/node_modules
+    working_dir: /work
+    command: sh -c "npm ci && npm run build"
+
+  server:
+    build:
+      context: ./server
+      dockerfile: Dockerfile
+    ports:
+      - "3001:3001"
+    volumes:
+      - ./server:/usr/src/app:cached
+      - ./build:/usr/src/app/build:cached
+    environment:
+      - NODE_ENV=production
+
+networks:
+  default:
+    driver: bridge
+
+volumes:
+  node_modules: {}
