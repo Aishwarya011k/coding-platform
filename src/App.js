@@ -204,10 +204,48 @@ public:
   // Define a dynamic base URL for API calls
   const API_BASE_URL = process.env.REACT_APP_API_BASE_URL || 'http://localhost:3001';
 
+  const formatResults = (results) => {
+    if (!results || results.length === 0) return 'No results';
+    const lines = [];
+    results.forEach((r, idx) => {
+      lines.push(`Test ${idx + 1}: ${r.passed ? 'Passed' : 'Failed'}`);
+      const out = r.stdout ?? r.output ?? r.out ?? '';
+      const err = r.stderr ?? r.error ?? r.compileError ?? '';
+      if (out && String(out).trim().length) lines.push(`  stdout: ${String(out).trim()}`);
+      if (err && String(err).trim()) lines.push(`  stderr/error: ${String(err).trim()}`);
+      if (r.timeMs !== undefined && r.timeMs !== null) lines.push(`  time: ${r.timeMs} ms`);
+      if (r.exitCode !== undefined && r.exitCode !== null) lines.push(`  exit code: ${r.exitCode}`);
+      lines.push('');
+    });
+    return lines.join('\n');
+  };
+
   // Update runCode function to use dynamic base URL
   const runCode = async () => {
     try {
-      const response = await fetch(`${API_BASE_URL}/api/run`, {
+      const funcName = (function extractFuncName(code, language) {
+        try {
+          if (language === 'python') {
+            const m = code.match(/def\s+([A-Za-z0-9_]+)\s*\(/);
+            return m ? m[1] : null;
+          }
+          if (language === 'javascript') {
+            const m = code.match(/function\s+([A-Za-z0-9_]+)\s*\(/);
+            return m ? m[1] : null;
+          }
+          if (language === 'java') {
+            const m = code.match(/(?:public|private|protected)?\s+static\s+[A-Za-z0-9_<>\[\]]+\s+([A-Za-z0-9_]+)\s*\(/);
+            return m ? m[1] : null;
+          }
+          if (language === 'c' || language === 'cpp') {
+            const m = code.match(/([A-Za-z0-9_]+)\s*\([^;\)]*\)\s*\{/);
+            return m ? m[1] : null;
+          }
+          return null;
+        } catch (e) { return null; }
+      })(code, language);
+
+      const response = await fetch(`${API_BASE_URL}/execute`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -215,7 +253,10 @@ public:
         body: JSON.stringify({
           language,
           code,
+          funcName,
           tests: problems[currentProblem].testCases,
+          timeLimitMs: 2000,
+          memoryLimitMb: 256
         }),
       });
 
@@ -224,7 +265,19 @@ public:
       }
 
       const data = await response.json();
-      setOutput(JSON.stringify(data.results, null, 2));
+      if (data.error) {
+        setOutput(`Runner error: ${data.error}`);
+      } else {
+        // show compile/runtime errors prominently (compileError, error, or stderr)
+        const results = data.results || [];
+        const errRes = results.find(r => r && (r.compileError || r.error || (r.stderr && String(r.stderr).trim().length > 0)));
+        if (errRes) {
+          const msg = errRes.compileError || errRes.error || errRes.stderr;
+          setOutput(`Error:\n${msg}`);
+        } else {
+          setOutput(formatResults(results));
+        }
+      }
     } catch (error) {
       setOutput(`Error: ${error.message}`);
     }
@@ -258,12 +311,34 @@ public:
       return tests;
     };
 
+    const funcName = (function extractFuncName(code, language) {
+      try {
+        if (language === 'python') {
+          const m = code.match(/def\s+([A-Za-z0-9_]+)\s*\(/);
+          return m ? m[1] : null;
+        }
+        if (language === 'javascript') {
+          const m = code.match(/function\s+([A-Za-z0-9_]+)\s*\(/);
+          return m ? m[1] : null;
+        }
+        if (language === 'java') {
+          const m = code.match(/(?:public|private|protected)?\s+static\s+[A-Za-z0-9_<>\[\]]+\s+([A-Za-z0-9_]+)\s*\(/);
+          return m ? m[1] : null;
+        }
+        if (language === 'c' || language === 'cpp') {
+          const m = code.match(/([A-Za-z0-9_]+)\s*\([^;\)]*\)\s*\{/);
+          return m ? m[1] : null;
+        }
+        return null;
+      } catch (e) { return null; }
+    })(code, language);
+
     const prepared = buildTests();
     try {
-      const resp = await fetch(`${API_BASE_URL}/api/run`, {
+      const resp = await fetch(`${API_BASE_URL}/execute`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ language, code, funcName: null, tests: prepared }),
+        body: JSON.stringify({ language, code, funcName, tests: prepared }),
       });
 
       if (!resp.ok) {
@@ -276,7 +351,16 @@ public:
         return;
       }
 
-      const passedCount = (data.results || []).filter(r => r.passed).length;
+      const results = data.results || [];
+      // If any result has compile/runtime stderr or compileError, show it first
+      const errRes = results.find(r => r && (r.compileError || r.error || (r.stderr && String(r.stderr).trim().length > 0)));
+      if (errRes) {
+        const msg = errRes.compileError || errRes.error || errRes.stderr;
+        setOutput(`Error:\n${msg}`);
+        return;
+      }
+
+      const passedCount = results.filter(r => r.passed).length;
       const score = Math.round((passedCount / (prepared.length || 1)) * 100);
 
       const submitResp = await fetch(`${API_BASE_URL}/api/submit`, {
@@ -293,7 +377,9 @@ public:
       if (submitData.error) {
         setOutput(`Submit error: ${submitData.error}`);
       } else {
-        setOutput(`Submitted! Score: ${score}% (${passedCount}/${prepared.length}) - id ${submitData.id}`);
+        // Show runner results followed by submission confirmation
+        const resultsText = formatResults(results || []);
+        setOutput(`${resultsText}\nSubmitted! Score: ${score}% (${passedCount}/${prepared.length}) - id ${submitData.id}`);
       }
     } catch (e) {
       setOutput(`Network/submit error: ${e.message}`);

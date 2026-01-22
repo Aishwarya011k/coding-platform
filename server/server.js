@@ -7,7 +7,7 @@ const os = require('os');
 const path = require('path');
 const { spawn } = require('child_process');
 
-// Generic function to execute commands with timeout and stdin
+// Generic function to execute commands with timeout and stdin support
 function execSpawn(cmd, args, opts = {}, stdinData = null, timeout = 10000) {
   return new Promise((resolve, reject) => {
     const child = spawn(cmd, args, opts);
@@ -56,6 +56,9 @@ app.use(helmet());
 app.use(cors());
 app.use(bodyParser.json({ limit: '300kb' }));
 
+// Docker-backed executor for secure sandboxed runs
+const { runSubmission } = require('./executor');
+
 // Add CSP and cross-origin headers
 app.use((req, res, next) => {
   res.setHeader("Content-Security-Policy", "script-src 'self' 'unsafe-inline';");
@@ -67,7 +70,7 @@ app.use((req, res, next) => {
 async function runJava(code, tests) {
   const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'java-run-'));
   try {
-    // Extract class name from Java code
+ 
     const classNameMatch = code.match(/public\s+class\s+(\w+)/);
     if (!classNameMatch) {
       throw new Error('Invalid Java code: No public class found');
@@ -77,7 +80,6 @@ async function runJava(code, tests) {
     const javaFile = path.join(tmpRoot, `${className}.java`);
     fs.writeFileSync(javaFile, code, 'utf8');
 
-    // Compile Java code
     const compileResult = await execSpawn('javac', [javaFile], { cwd: tmpRoot }, null, 15000);
     if (compileResult.code !== 0) {
       return [{ passed: false, output: null, expected: null, error: compileResult.stderr }];
@@ -231,6 +233,34 @@ async function runPython(code, tests) {
   }
 }
 
+// Helper to wrap user-provided function-only code into a complete program
+function wrapUserCodeForRunner(language, userCode, funcName) {
+  const fn = funcName || 'solve';
+  const lang = (language || '').toLowerCase();
+  switch (lang) {
+    case 'python': {
+      return userCode + "\n\nif __name__ == '__main__':\n    import sys\n    data = sys.stdin.read()\n    try:\n        res = " + fn + "(data)\n    except TypeError:\n        try:\n            res = " + fn + "()\n        except Exception:\n            res = None\n    if res is not None:\n        print(res)\n";
+    }
+    case 'javascript':
+    case 'js': {
+      return userCode + "\n\nif (require.main === module) {\n  const fs = require('fs');\n  const data = fs.readFileSync(0, 'utf8');\n  try {\n    const out = (typeof " + fn + " === 'function') ? " + fn + "(data) : undefined;\n    if (out !== undefined && out !== null) console.log(out);\n  } catch (e) {}\n}\n";
+    }
+    case 'java': {
+      // Place user code inside Main class and call static funcName(String)
+      const indented = userCode.split('\n').map(l => '  ' + l).join('\n');
+      return 'public class Main {\n' + indented + '\n\n  public static void main(String[] args) throws Exception {\n    java.util.Scanner s = new java.util.Scanner(System.in);\n    StringBuilder sb = new StringBuilder();\n    while (s.hasNextLine()) { sb.append(s.nextLine()); if (s.hasNextLine()) sb.append("\\n"); }\n    String res = null;\n    try { res = ' + fn + '(sb.toString()); } catch (NoSuchMethodError e) { try { ' + fn + '(); } catch (Exception ex) {} }\n    if (res != null) System.out.println(res);\n  }\n}\n';
+    }
+    case 'c':
+    case 'cpp':
+    case 'c++': {
+      // Assume user provides a function `void funcName()` or `int funcName()` that performs IO
+      return userCode + '\n\nint main() {\n    ' + fn + '();\n    return 0;\n}\n';
+    }
+    default:
+      return userCode;
+  }
+}
+
 // Main execution endpoint
 app.post('/api/run', async (req, res) => {
   try {
@@ -244,21 +274,30 @@ app.post('/api/run', async (req, res) => {
       return res.status(400).json({ error: 'Language not specified' });
     }
 
-    let results;
+    // Prepare tests: normalize to { stdin, expected }
+    const preparedTests = (tests || []).map(t => {
+      if (t.stdin !== undefined) return { stdin: t.stdin, expected: t.expected };
+      if (t.input !== undefined) return { stdin: t.input, expected: t.expected };
+      if (t.args !== undefined) return { stdin: JSON.stringify(t.args), expected: t.expected };
+      return { stdin: '', expected: t.expected };
+    });
 
+    const wrappedCode = wrapUserCodeForRunner(language, code, req.body.funcName);
+
+    let results;
     switch (language.toLowerCase()) {
       case 'python':
-        results = await runPython(code, tests);
+        results = await runPython(wrappedCode, preparedTests);
         break;
       case 'java':
-        results = await runJava(code, tests);
+        results = await runJava(wrappedCode, preparedTests);
         break;
       case 'c':
-        results = await runC(code, tests);
+        results = await runC(wrappedCode, preparedTests);
         break;
       case 'cpp':
       case 'c++':
-        results = await runCpp(code, tests);
+        results = await runCpp(wrappedCode, preparedTests);
         break;
       default:
         return res.status(400).json({ error: `Unsupported language: ${language}` });
@@ -274,6 +313,20 @@ app.post('/api/run', async (req, res) => {
 // Placeholder for submission endpoint
 app.post('/api/submit', (req, res) => {
   res.status(200).json({ ok: true, message: 'Submission received' });
+});
+
+// Optional Docker-backed secure execution endpoint
+app.post('/execute', async (req, res) => {
+  try {
+    const { language, code, tests, funcName, timeLimitMs, memoryLimitMb, outputLimitBytes } = req.body;
+    if (!language || !code || !Array.isArray(tests)) return res.status(400).json({ error: 'language, code and tests required' });
+
+    const results = await runSubmission({ language, code, tests, timeLimitMs: timeLimitMs || 1000, memoryLimitMb: memoryLimitMb || 256, outputLimitBytes: outputLimitBytes || 65536, funcName });
+    return res.json({ results });
+  } catch (e) {
+    console.error('Docker execution error:', e);
+    return res.status(500).json({ error: String(e) });
+  }
 });
 
 // Serve frontend build if present. Support multiple build locations and env override.
