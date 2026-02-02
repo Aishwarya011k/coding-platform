@@ -6,10 +6,13 @@ import 'codemirror/mode/python/python';
 import 'codemirror/mode/clike/clike';
 import detectDevTools from 'devtools-detect';
 import './App.css';
+import AuthForm from './components/AuthForm';
+import Account from './components/Account';
 
 function App() {
   const [currentView, setCurrentView] = useState('home');
   const [violations, setViolations] = useState(0);
+  const [token, setToken] = useState(localStorage.getItem('cp_token') || null);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [timeLeft, setTimeLeft] = useState(3600); // 1 hour in seconds
   const [code, setCode] = useState(`// Write your solution here
@@ -245,11 +248,11 @@ public:
         } catch (e) { return null; }
       })(code, language);
 
+      const headers = { 'Content-Type': 'application/json' };
+      if (token) headers['Authorization'] = 'Bearer ' + token;
       const response = await fetch(`${API_BASE_URL}/execute`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
+        headers,
         body: JSON.stringify({
           language,
           code,
@@ -335,9 +338,11 @@ public:
 
     const prepared = buildTests();
     try {
+      const execHeaders = { 'Content-Type': 'application/json' };
+      if (token) execHeaders['Authorization'] = 'Bearer ' + token;
       const resp = await fetch(`${API_BASE_URL}/execute`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: execHeaders,
         body: JSON.stringify({ language, code, funcName, tests: prepared }),
       });
 
@@ -363,9 +368,11 @@ public:
       const passedCount = results.filter(r => r.passed).length;
       const score = Math.round((passedCount / (prepared.length || 1)) * 100);
 
+      const submitHeaders = { 'Content-Type': 'application/json' };
+      if (token) submitHeaders['Authorization'] = 'Bearer ' + token;
       const submitResp = await fetch(`${API_BASE_URL}/api/submit`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: submitHeaders,
         body: JSON.stringify({ problemId: currentProblem, language, code, score }),
       });
 
@@ -527,25 +534,13 @@ public:
             </div> 
           </section>
         )}
-        {currentView === 'submissions' && (
-          <section className="submissions">
-            <h2>My Submissions</h2>
-            {Object.keys(submissions).length === 0 ? (
-              <p>No submissions yet.</p>
-            ) : (
-              <ul>
-                {Object.entries(submissions).map(([idx, sub]) => (
-                  <li key={idx}>
-                    <strong>{problems[parseInt(idx)].title}</strong>: {sub.score}% 
-                    <details>
-                      <summary>Code</summary>
-                      <pre>{sub.code}</pre>
-                    </details>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </section>
+        {currentView === 'submissions' && token && (
+          <Account token={token} onLogout={() => { setToken(null); localStorage.removeItem('cp_token'); }} />
+        )}
+        {currentView === 'submissions' && !token && (
+          <div style={{ padding:12 }}>
+            <AuthForm onLogin={(t) => { setToken(t); localStorage.setItem('cp_token', t); }} />
+          </div>
         )}
       </main>
     </div>

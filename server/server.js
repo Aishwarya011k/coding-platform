@@ -51,6 +51,9 @@ function execSpawn(cmd, args, opts = {}, stdinData = null, timeout = 10000) {
   });
 }
 
+// load .env if available (optional dependency)
+try { require('dotenv').config(); } catch (e) { /* dotenv not installed */ }
+
 const app = express();
 app.use(helmet());
 app.use(cors());
@@ -58,6 +61,16 @@ app.use(bodyParser.json({ limit: '300kb' }));
 
 // Docker-backed executor for secure sandboxed runs
 const { runSubmission } = require('./executor');
+const bcrypt = require('bcrypt');
+const jwt = require('jsonwebtoken');
+const dbModule = require('./db');
+const { sendOtpEmail, sendTestEmail, verifyTransporter } = require('./mail');
+
+const JWT_SECRET = process.env.JWT_SECRET || 'replace-this-with-secure-secret';
+let db;
+
+// Initialize DB
+dbModule.init().then(d => { db = d; }).catch(err => { console.error('DB init error', err); process.exit(1); });
 
 // Add CSP and cross-origin headers
 app.use((req, res, next) => {
@@ -311,8 +324,185 @@ app.post('/api/run', async (req, res) => {
 });
 
 // Placeholder for submission endpoint
-app.post('/api/submit', (req, res) => {
-  res.status(200).json({ ok: true, message: 'Submission received' });
+// Protected endpoint middleware
+function authMiddleware(req, res, next) {
+  const auth = req.headers.authorization;
+  if (!auth || !auth.startsWith('Bearer ')) return res.status(401).json({ error: 'Unauthorized' });
+  const token = auth.slice(7);
+  try {
+    const payload = jwt.verify(token, JWT_SECRET);
+    req.user = payload;
+    next();
+  } catch (e) {
+    return res.status(401).json({ error: 'Invalid token' });
+  }
+}
+
+app.post('/api/signup', async (req, res) => {
+  try {
+    const { email, password, name } = req.body;
+    if (!email || !password) return res.status(400).json({ error: 'email and password required' });
+    const existing = await db.get('SELECT id FROM users WHERE email = ?', email);
+    if (existing) return res.status(400).json({ error: 'Email already registered' });
+    const hash = await bcrypt.hash(password, 10);
+    const now = Date.now();
+    const result = await db.run('INSERT INTO users (email, name, passwordHash, createdAt, lastActive, streak) VALUES (?, ?, ?, ?, ?, ?)', email, name || null, hash, now, now, 1);
+    const userId = result.lastID;
+    const token = jwt.sign({ id: userId, email }, JWT_SECRET, { expiresIn: '30d' });
+    res.json({ token });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: 'Signup failed' });
+  }
+});
+
+app.post('/api/login', async (req, res) => {
+  try {
+    const { email, password } = req.body;
+    if (!email || !password) return res.status(400).json({ error: 'email and password required' });
+    const user = await db.get('SELECT id, passwordHash FROM users WHERE email = ?', email);
+    if (!user) return res.status(400).json({ error: 'Invalid credentials' });
+    const ok = await bcrypt.compare(password, user.passwordHash);
+    if (!ok) return res.status(400).json({ error: 'Invalid credentials' });
+    const token = jwt.sign({ id: user.id, email }, JWT_SECRET, { expiresIn: '30d' });
+    // update lastActive and streak if needed
+    await db.run('UPDATE users SET lastActive = ? WHERE id = ?', Date.now(), user.id);
+    res.json({ token });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: 'Login failed' });
+  }
+});
+
+// Request OTP for verify or reset
+app.post('/api/request-otp', async (req, res) => {
+  try {
+    const { email, purpose } = req.body;
+    if (!email || !purpose) return res.status(400).json({ error: 'email and purpose required' });
+    const code = Math.floor(100000 + Math.random() * 900000).toString();
+    const expiresAt = Date.now() + 15 * 60 * 1000;
+    // try to find user
+    const user = await db.get('SELECT id FROM users WHERE email = ?', email);
+    const userId = user ? user.id : null;
+    await db.run('INSERT INTO otps (email, userId, code, purpose, expiresAt, used) VALUES (?, ?, ?, ?, ?, 0)', email, userId, code, purpose, expiresAt);
+    try { await sendOtpEmail(email, code, purpose); } catch (e) { console.warn('Email send failed', e.message); }
+    res.json({ ok: true });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: 'Failed to request OTP' });
+  }
+});
+
+app.post('/api/verify-otp', async (req, res) => {
+  try {
+    const { email, code, purpose, newPassword } = req.body;
+    if (!email || !code || !purpose) return res.status(400).json({ error: 'email, code and purpose required' });
+    const row = await db.get('SELECT * FROM otps WHERE email = ? AND code = ? AND purpose = ? AND used = 0 ORDER BY id DESC LIMIT 1', email, code, purpose);
+    if (!row) return res.status(400).json({ error: 'Invalid code' });
+    if (row.expiresAt < Date.now()) return res.status(400).json({ error: 'Code expired' });
+    // mark used
+    await db.run('UPDATE otps SET used = 1 WHERE id = ?', row.id);
+    if (purpose === 'verify') {
+      // ensure user exists
+      let user = await db.get('SELECT id FROM users WHERE email = ?', email);
+      if (!user) {
+        const now = Date.now();
+        const result = await db.run('INSERT INTO users (email, name, passwordHash, createdAt, lastActive, streak, emailVerified) VALUES (?, ?, ?, ?, ?, ?, ?)', email, null, '', now, now, 0, 1);
+        user = { id: result.lastID };
+      } else {
+        await db.run('UPDATE users SET emailVerified = 1 WHERE id = ?', user.id);
+      }
+      return res.json({ ok: true });
+    }
+    if (purpose === 'reset') {
+      if (!newPassword) return res.status(400).json({ error: 'newPassword required to reset' });
+      const user = await db.get('SELECT id FROM users WHERE email = ?', email);
+      if (!user) return res.status(400).json({ error: 'User not found' });
+      const hash = await bcrypt.hash(newPassword, 10);
+      await db.run('UPDATE users SET passwordHash = ? WHERE id = ?', hash, user.id);
+      return res.json({ ok: true });
+    }
+    res.status(400).json({ error: 'Unknown purpose' });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: 'OTP verify failed' });
+  }
+});
+
+// Send a test email (useful to verify SMTP configuration)
+app.post('/api/send-test-email', async (req, res) => {
+  try {
+    const { email } = req.body;
+    if (!email) return res.status(400).json({ error: 'email required' });
+    await sendTestEmail(email, 'OSL Coding Platform - Test Email', 'This is a test email from your platform. If you received this, SMTP is working.');
+    res.json({ ok: true });
+  } catch (e) {
+    console.error('Test email send failed', e);
+    res.status(500).json({ error: 'Failed to send test email', detail: e.message });
+  }
+});
+
+// Check SMTP transporter status
+app.get('/api/smtp-status', async (req, res) => {
+  try {
+    const result = await verifyTransporter();
+    if (result.ok) return res.json({ ok: true });
+    return res.status(500).json({ ok: false, error: result.error });
+  } catch (e) {
+    console.error('SMTP status check failed', e);
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+// Get authenticated user profile
+app.get('/api/me', authMiddleware, async (req, res) => {
+  try {
+    const u = await db.get('SELECT id, email, name, createdAt, lastActive, streak FROM users WHERE id = ?', req.user.id);
+    if (!u) return res.status(404).json({ error: 'User not found' });
+    res.json({ user: u });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: 'Failed to fetch profile' });
+  }
+});
+
+// Save submission and return id
+app.post('/api/submit', authMiddleware, async (req, res) => {
+  try {
+    const { problemId, language, code, score, results } = req.body;
+    const now = Date.now();
+    const r = await db.run('INSERT INTO submissions (userId, problemId, language, code, score, results, createdAt) VALUES (?, ?, ?, ?, ?, ?, ?)', req.user.id, problemId || null, language || null, code || null, typeof score === 'number' ? score : null, JSON.stringify(results || []), now);
+    // update streak
+    const user = await db.get('SELECT lastActive, streak FROM users WHERE id = ?', req.user.id);
+    const lastActive = user.lastActive || 0;
+    const lastDate = new Date(lastActive).setHours(0,0,0,0);
+    const today = new Date(now).setHours(0,0,0,0);
+    let streak = user.streak || 0;
+    if (lastDate === today) {
+      // same day, unchanged
+    } else if (lastDate === today - 24*60*60*1000) {
+      streak = streak + 1;
+    } else {
+      streak = 1;
+    }
+    await db.run('UPDATE users SET lastActive = ?, streak = ? WHERE id = ?', now, streak, req.user.id);
+    res.json({ ok: true, id: r.lastID });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: 'Submit failed' });
+  }
+});
+
+// List submissions for the authenticated user
+app.get('/api/submissions', authMiddleware, async (req, res) => {
+  try {
+    const rows = await db.all('SELECT id, problemId, language, score, results, createdAt FROM submissions WHERE userId = ? ORDER BY createdAt DESC LIMIT 500', req.user.id);
+    const parsed = rows.map(r => ({ ...r, results: r.results ? JSON.parse(r.results) : [] }));
+    res.json({ submissions: parsed });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: 'Failed to fetch submissions' });
+  }
 });
 
 // Optional Docker-backed secure execution endpoint
