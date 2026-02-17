@@ -1,8 +1,9 @@
 import React, { useState } from 'react';
+import authService from '../services/authService';
+import ForgotPassword from './ForgotPassword';
+import ResetPassword from './ResetPassword';
 
-const API_BASE_URL = process.env.REACT_APP_API_BASE_URL || 'http://localhost:3001';
-
-export default function AuthForm({ onLogin }) {
+export default function AuthForm({ onLogin, onForgotPassword, onResetPassword }) {
   const [mode, setMode] = useState('login');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -11,116 +12,125 @@ export default function AuthForm({ onLogin }) {
   const [code, setCode] = useState('');
   const [newPassword, setNewPassword] = useState('');
   const [info, setInfo] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [resetToken, setResetToken] = useState('');
 
   const submit = async (e) => {
     e.preventDefault();
     setError('');
+    setLoading(true);
     try {
-      if (mode === 'login' || mode === 'signup') {
-        const url = mode === 'login' ? `${API_BASE_URL}/api/login` : `${API_BASE_URL}/api/signup`;
-        const resp = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email, password, name }) });
-        const data = await resp.json();
-        if (!resp.ok) throw new Error(data.error || 'Auth failed');
-        onLogin(data.token);
+      if (mode === 'signup') {
+        if (!name || !email || !password) {
+          throw new Error('Please fill in all fields');
+        }
+        const data = await authService.signup(name, email, password);
+        setInfo('Account created successfully! Logging in...');
+        setTimeout(() => {
+          onLogin(data.token);
+        }, 1000);
         return;
       }
 
+      if (mode === 'login') {
+        if (!email || !password) {
+          throw new Error('Please fill in all fields');
+        }
+        const data = await authService.signin(email, password);
+        setInfo('Login successful!');
+        setTimeout(() => {
+          onLogin(data.token);
+        }, 1000);
+        return;
+      }
+
+      // Future modes for forgot password, reset, verify can be added here
       if (mode === 'forgot') {
-        // request OTP for reset
-        const resp = await fetch(`${API_BASE_URL}/api/request-otp`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email, purpose: 'reset' }) });
-        const data = await resp.json();
-        if (!resp.ok) throw new Error(data.error || 'Failed to request reset code');
-        setInfo('Reset code sent to email. Enter code and new password.');
-        setMode('reset');
-        return;
-      }
-
-      if (mode === 'reset') {
-        if (!code || !newPassword) return setError('Code and new password required');
-        const resp = await fetch(`${API_BASE_URL}/api/verify-otp`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email, code, purpose: 'reset', newPassword }) });
-        const data = await resp.json();
-        if (!resp.ok) throw new Error(data.error || 'Reset failed');
-        setInfo('Password reset successful. Please login.');
-        setMode('login');
-        setPassword('');
-        setCode('');
-        setNewPassword('');
-        return;
-      }
-
-      if (mode === 'verify') {
-        // verify email using code
-        if (!code) return setError('Code required');
-        const resp = await fetch(`${API_BASE_URL}/api/verify-otp`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email, code, purpose: 'verify' }) });
-        const data = await resp.json();
-        if (!resp.ok) throw new Error(data.error || 'Verify failed');
-        setInfo('Email verified. You can now login.');
-        setMode('login');
-        setCode('');
-        return;
+        throw new Error('Password reset not yet implemented');
       }
     } catch (e) {
       setError(e.message);
+    } finally {
+      setLoading(false);
     }
   };
 
-  const requestVerify = async () => {
-    setError('');
-    setInfo('');
-    try {
-      if (!email) return setError('Enter your email to request verification');
-      const resp = await fetch(`${API_BASE_URL}/api/request-otp`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email, purpose: 'verify' }) });
-      const data = await resp.json();
-      if (!resp.ok) throw new Error(data.error || 'Failed to request verification code');
-      setInfo('Verification code sent to email. Enter the code below.');
-      setMode('verify');
-    } catch (e) {
-      setError(e.message);
-    }
-  };
+  // Handle forgot password flow
+  if (mode === 'forgot') {
+    return (
+      <ForgotPassword 
+        onBack={() => { setMode('login'); setError(''); setInfo(''); }}
+        onResetTokenReceived={(token, userEmail) => {
+          setResetToken(token);
+          setEmail(userEmail);
+          setMode('reset');
+        }}
+      />
+    );
+  }
+
+  // Handle reset password flow
+  if (mode === 'reset') {
+    return (
+      <ResetPassword 
+        resetToken={resetToken}
+        email={email}
+        onSuccess={() => {
+          setMode('login');
+          setError('');
+          setInfo('Password reset successful! Please log in.');
+          setEmail('');
+          setPassword('');
+          setResetToken('');
+        }}
+        onBack={() => { setMode('login'); setError(''); setInfo(''); setResetToken(''); }}
+      />
+    );
+  }
 
   return (
     <div style={{ padding: 12 }}>
-      <h3>{mode === 'login' ? 'Sign in' : mode === 'signup' ? 'Create account' : mode === 'forgot' ? 'Forgot password' : mode === 'reset' ? 'Reset password' : mode === 'verify' ? 'Verify email' : ''}</h3>
+      <h3>{mode === 'login' ? 'Sign in' : mode === 'signup' ? 'Create account' : 'Authentication'}</h3>
       <form onSubmit={submit}>
-        {(mode === 'signup' || mode === 'login' || mode === 'forgot' || mode === 'verify') && (
-          <div><input placeholder="Email" value={email} onChange={e=>setEmail(e.target.value)} /></div>
+        {(mode === 'signup' || mode === 'login') && (
+          <div><input placeholder="Email" value={email} onChange={e=>setEmail(e.target.value)} disabled={loading} /></div>
         )}
 
         {mode === 'signup' && (
-          <div><input placeholder="Name" value={name} onChange={e=>setName(e.target.value)} /></div>
+          <div><input placeholder="Name" value={name} onChange={e=>setName(e.target.value)} disabled={loading} /></div>
         )}
 
         {(mode === 'login' || mode === 'signup') && (
-          <div><input placeholder="Password" type="password" value={password} onChange={e=>setPassword(e.target.value)} /></div>
+          <div><input placeholder="Password" type="password" value={password} onChange={e=>setPassword(e.target.value)} disabled={loading} /></div>
         )}
 
-        {mode === 'reset' && (
-          <>
-            <div><input placeholder="Code" value={code} onChange={e=>setCode(e.target.value)} /></div>
-            <div><input placeholder="New password" type="password" value={newPassword} onChange={e=>setNewPassword(e.target.value)} /></div>
-          </>
-        )}
-
-        {mode === 'verify' && (
-          <div><input placeholder="Verification code" value={code} onChange={e=>setCode(e.target.value)} /></div>
-        )}
-
-        <div style={{ marginTop:8 }}>
-          {(mode === 'login' || mode === 'signup') && <button type="submit">{mode === 'login' ? 'Login' : 'Sign up'}</button>}
-          {mode === 'forgot' && <button type="submit">Request reset code</button>}
-          {mode === 'reset' && <button type="submit">Reset password</button>}
-          {mode === 'verify' && <button type="submit">Verify</button>}
-          <button type="button" onClick={() => setMode(mode === 'login' ? 'signup' : 'login')} style={{ marginLeft:8 }}>{mode === 'login' ? 'Create account' : 'Have an account? Login'}</button>
+        <div style={{ marginTop: 8 }}>
+          <button type="submit" disabled={loading}>
+            {loading ? 'Processing...' : mode === 'login' ? 'Sign in' : 'Sign up'}
+          </button>
+          <button 
+            type="button" 
+            onClick={() => { setMode(mode === 'login' ? 'signup' : 'login'); setError(''); setInfo(''); }}
+            style={{ marginLeft: 8 }}
+            disabled={loading}
+          >
+            {mode === 'login' ? 'Create account' : 'Have an account? Sign in'}
+          </button>
         </div>
 
-        <div style={{ marginTop:8 }}>
-          {mode !== 'forgot' && <button type="button" onClick={() => { setMode('forgot'); setError(''); setInfo(''); }} style={{ marginRight:8 }}>Forgot password?</button>}
-          {mode !== 'verify' && <button type="button" onClick={requestVerify}>Verify email</button>}
-        </div>
+        {mode === 'login' && (
+          <button 
+            type="button" 
+            onClick={() => { setMode('forgot'); setError(''); setInfo(''); setEmail(''); }}
+            style={{ marginTop: 8, background: 'none', border: 'none', color: '#0070f3', cursor: 'pointer', padding: 0 }}
+            disabled={loading}
+          >
+            Forgot password?
+          </button>
+        )}
 
-        {info && <div style={{ color:'green', marginTop:8 }}>{info}</div>}
-        {error && <div style={{ color:'red', marginTop:8 }}>{error}</div>}
+        {info && <div style={{ color: 'green', marginTop: 8, fontSize: '14px' }}>{info}</div>}
+        {error && <div style={{ color: 'red', marginTop: 8, fontSize: '14px' }}>{error}</div>}
       </form>
     </div>
   );

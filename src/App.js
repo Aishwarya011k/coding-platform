@@ -8,6 +8,7 @@ import detectDevTools from 'devtools-detect';
 import './App.css';
 import AuthForm from './components/AuthForm';
 import Account from './components/Account';
+import { allProblems } from './problems';
 
 function App() {
   const [currentView, setCurrentView] = useState('home');
@@ -23,111 +24,7 @@ function twoSum(nums, target) {
   const [output, setOutput] = useState('');
   const [currentProblem, setCurrentProblem] = useState(0);
   const [submissions, setSubmissions] = useState({}); 
-  const problems = [
-    {
-      title: 'Two Sum',
-      description: 'Given an array of integers nums and an integer target, return indices of the two numbers such that they add up to target. You may assume that each input would have exactly one solution, and you may not use the same element twice.',
-      constraints: [
-        '2 <= nums.length <= 10^4',
-        '-10^9 <= nums[i] <= 10^9',
-        '-10^9 <= target <= 10^9',
-        'Only one valid answer exists.'
-      ],
-      sampleInput: 'nums = [2,7,11,15], target = 9',
-      sampleOutput: '[0,1]',
-      testCases: [
-        { input: 'nums = [2,7,11,15], target = 9', expected: '[0,1]' },
-        { input: 'nums = [3,2,4], target = 6', expected: '[1,2]' },
-        { stdin: '2 7 11 15\n9', expected: '0 1' },
-        { stdin: '3 2 4\n6', expected: '1 2' }
-      ],
-      templates: {
-        javascript: `function twoSum(nums, target) {
-  // Your code here
-}`,
-        python: `def two_sum(nums, target):
-    # Your code here
-    pass`,
-        c: `#include <stdio.h>
-#include <stdlib.h>
-
-int* twoSum(int* nums, int numsSize, int target, int* returnSize) {
-    // Your code here
-    *returnSize = 2;
-    int* result = (int*)malloc(2 * sizeof(int));
-    return result;
-}`,
-        cpp: `#include <vector>
-using namespace std;
-
-class Solution {
-public:
-    vector<int> twoSum(vector<int>& nums, int target) {
-        // Your code here
-    }
-};`,
-        java: `public class Solution {
-    public int[] twoSum(int[] nums, int target) {
-        // Your code here
-        return new int[]{};
-    }
-}`
-      },
-      runner: (func, test) => {
-        const nums = JSON.parse(test.input.match(/nums = (\[.*\])/)[1]);
-        const target = JSON.parse(test.input.match(/target = (\d+)/)[1]);
-        return func(nums, target);
-      }
-    },
-    {
-      title: 'Reverse String',
-      description: 'Write a function that reverses a string. The input string is given as an array of characters s.',
-      constraints: [
-        '1 <= s.length <= 10^5',
-        's[i] is a printable ascii character.'
-      ],
-      sampleInput: 's = ["h","e","l","l","o"]',
-      sampleOutput: '["o","l","l","e","h"]',
-      testCases: [
-        { input: 's = ["h","e","l","l","o"]', expected: '["o","l","l","e","h"]' },
-        { stdin: 'h e l l o', expected: 'o l l e h' }
-      ],
-      templates: {
-        javascript: `function reverseString(s) {
-  // Your code here
-}`,
-        python: `def reverse_string(s):
-    # Your code here
-    pass`,
-        c: `#include <stdio.h>
-#include <string.h>
-
-void reverseString(char* s, int sSize) {
-    // Your code here
-}`,
-        cpp: `#include <vector>
-#include <algorithm>
-using namespace std;
-
-class Solution {
-public:
-    void reverseString(vector<char>& s) {
-        // Your code here
-    }
-};`,
-        java: `public class Solution {
-    public void reverseString(char[] s) {
-        // Your code here
-    }
-}`
-      },
-      runner: (func, test) => {
-        const s = JSON.parse(test.input.match(/s = (\[.*\])/)[1]);
-        func(s); // modifies in place
-        return s;
-      }
-    }
-  ];
+  const problems = allProblems;
   const problem = problems[currentProblem];
 
   useEffect(() => {
@@ -406,11 +303,16 @@ public:
         <div className="nav">
           <button onClick={() => setCurrentView('home')}>Home</button>
           <button onClick={() => setCurrentView('contests')}>Contests</button>
-          <button onClick={() => setCurrentView('submissions')}>My Submissions</button>
+          {token && <button onClick={() => setCurrentView('submissions')}>My Submissions</button>}
           {currentView === 'editor' && <span className="timer">Time Left: {formatTime(timeLeft)}</span>}
           {violations > 0 && <span className="violations">Violations: {violations}</span>}
-          {!isFullscreen && <button onClick={enterFullscreen}>Enter Fullscreen</button>}
-          {isFullscreen && <button onClick={exitFullscreen}>Exit Fullscreen</button>}
+          {!isFullscreen && currentView === 'editor' && <button onClick={enterFullscreen}>Enter Fullscreen</button>}
+          {isFullscreen && currentView === 'editor' && <button onClick={exitFullscreen}>Exit Fullscreen</button>}
+          {token ? (
+            <button onClick={() => setCurrentView('submissions')} style={{ marginLeft: 'auto', backgroundColor: '#4CAF50', color: 'white' }}>Account</button>
+          ) : (
+            <button onClick={() => setCurrentView('submissions')} style={{ marginLeft: 'auto', backgroundColor: '#2196F3', color: 'white' }}>Sign In</button>
+          )}
         </div>
       </header>
       <main>
@@ -464,7 +366,9 @@ public:
               <div className="code-header">
                 <div>
                   <button onClick={() => setCurrentProblem(Math.max(0, currentProblem - 1))}>Prev</button>
-                  <span>Problem {currentProblem + 1} of {problems.length}</span>
+                  <span style={{ marginLeft: '10px', marginRight: '10px', fontWeight: 'bold' }}>
+                    Test {problem.testNum} - {problem.difficulty} | {problem.title} | Problem {currentProblem + 1} of {problems.length}
+                  </span>
                   <button onClick={() => setCurrentProblem(Math.min(problems.length - 1, currentProblem + 1))}>Next</button>
                 </div>
                 <select value={language} onChange={(e) => setLanguage(e.target.value)}>

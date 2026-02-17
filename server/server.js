@@ -1,13 +1,81 @@
-const express = require('express');
-const bodyParser = require('body-parser');
-const cors = require('cors');
-const helmet = require('helmet');
-const fs = require('fs');
-const os = require('os');
-const path = require('path');
-const { spawn } = require('child_process');
+import express from 'express';
+import bodyParser from 'body-parser';
+import cors from 'cors';
+import helmet from 'helmet';
+import fs from 'fs';
+import os from 'os';
+import path from 'path';
+import { spawn } from 'child_process';
+import dotenv from 'dotenv';
+import { fileURLToPath } from 'url';
+import pool from './src/config/db.js';
 
-// Generic function to execute commands with timeout and stdin support
+// Define __dirname and __filename for ES modules
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+// Load environment variables
+dotenv.config();
+
+const JWT_SECRET = process.env.JWT_SECRET || 'replace-this-with-secure-secret';
+let db = null;
+
+// Initialize PostgreSQL connection
+const connectDB = async () => {
+  try {
+    const res = await pool.query('SELECT NOW()');
+    console.log('✓ PostgreSQL Connected:', res.rows[0].now);
+  } catch (error) {
+    console.error('\n❌ PostgreSQL Connection Error:');
+    console.error('Error Details:', error.message);
+    console.error('\nPlease ensure:');
+    console.error('1. PostgreSQL server is running');
+    console.error('2. DATABASE_URL in .env is correct');
+    console.error('3. Database "coding-platform" exists');
+    console.error('4. Credentials are valid\n');
+    process.exit(1);
+  }
+};
+
+// Create tables if they don't exist
+const initializeDatabase = async () => {
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS users (
+        id SERIAL PRIMARY KEY,
+        name VARCHAR(100),
+        email VARCHAR(100) UNIQUE NOT NULL,
+        password VARCHAR(255) NOT NULL,
+        password_reset_token VARCHAR(255),
+        password_reset_expiry TIMESTAMP,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      );
+    `);
+    console.log('✓ Users table initialized');
+
+    // Add password reset columns if they don't exist
+    try {
+      await pool.query(`
+        ALTER TABLE users 
+        ADD COLUMN IF NOT EXISTS password_reset_token VARCHAR(255),
+        ADD COLUMN IF NOT EXISTS password_reset_expiry TIMESTAMP;
+      `);
+      console.log('✓ Password reset columns added');
+    } catch (err) {
+      // Columns might already exist, which is fine
+      if (!err.message.includes('already exists')) {
+        console.log('✓ Password reset columns verified');
+      }
+    }
+  } catch (error) {
+    console.error('Database initialization error:', error.message);
+  }
+};
+
+// Connect and initialize on startup
+connectDB();
+initializeDatabase();
 function execSpawn(cmd, args, opts = {}, stdinData = null, timeout = 10000) {
   return new Promise((resolve, reject) => {
     const child = spawn(cmd, args, opts);
@@ -51,26 +119,11 @@ function execSpawn(cmd, args, opts = {}, stdinData = null, timeout = 10000) {
   });
 }
 
-// load .env if available (optional dependency)
-try { require('dotenv').config(); } catch (e) { /* dotenv not installed */ }
-
+// Initialize Express app
 const app = express();
 app.use(helmet());
 app.use(cors());
 app.use(bodyParser.json({ limit: '300kb' }));
-
-// Docker-backed executor for secure sandboxed runs
-const { runSubmission } = require('./executor');
-const bcrypt = require('bcrypt');
-const jwt = require('jsonwebtoken');
-const dbModule = require('./db');
-const { sendOtpEmail, sendTestEmail, verifyTransporter } = require('./mail');
-
-const JWT_SECRET = process.env.JWT_SECRET || 'replace-this-with-secure-secret';
-let db;
-
-// Initialize DB
-dbModule.init().then(d => { db = d; }).catch(err => { console.error('DB init error', err); process.exit(1); });
 
 // Add CSP and cross-origin headers
 app.use((req, res, next) => {
@@ -78,6 +131,48 @@ app.use((req, res, next) => {
   res.setHeader("Cross-Origin-Resource-Policy", "cross-origin");
   next();
 });
+
+// Import and mount authentication routes (ES6 modules)
+let authRoutes = null;
+(async () => {
+  try {
+    const authModule = await import('./src/routes/authRoutes.js');
+    authRoutes = authModule.default;
+    app.use('/api/auth', authRoutes);
+    console.log('✓ Authentication routes mounted at /api/auth');
+  } catch (err) {
+    console.warn('⚠ Could not load auth routes:', err.message);
+  }
+})();
+
+// Load other modules as needed - quietly skip if they use CommonJS
+(async () => {
+  try {
+    await import('./executor.js');
+  } catch (e) {
+    // Skip - optional module
+  }
+})();
+
+(async () => {
+  try {
+    const dbMod = await import('./db.js');
+    const dbModule = dbMod.default;
+    if (dbModule?.init) {
+      db = await dbModule.init();
+    }
+  } catch (e) {
+    // Skip - optional module
+  }
+})();
+
+(async () => {
+  try {
+    await import('./mail.js');
+  } catch (e) {
+    // Skip - optional module
+  }
+})();
 
 // Java execution function
 async function runJava(code, tests) {
@@ -243,6 +338,41 @@ async function runPython(code, tests) {
     return results;
   } finally {
     fs.rmSync(tmpRoot, { recursive: true, force: true });
+  }
+}
+
+// Node.js/JavaScript execution
+async function runNodeJS(code, tests, funcName) {
+  const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'node-run-'));
+  try {
+    const jsFile = path.join(tmpRoot, 'solution.js');
+    fs.writeFileSync(jsFile, code, 'utf8');
+
+    const results = [];
+    for (const test of tests) {
+      const stdinData = test.stdin || '';
+      const runResult = await execSpawn('node', [jsFile], { cwd: tmpRoot }, stdinData, 10000);
+
+      if (runResult.code !== 0) {
+        results.push({
+          passed: false,
+          output: null,
+          expected: test.expected,
+          error: runResult.stderr
+        });
+      } else {
+        const output = runResult.stdout.trim();
+        results.push({
+          passed: output === test.expected,
+          output,
+          expected: test.expected,
+          error: null
+        });
+      }
+    }
+    return results;
+  } finally {
+    try { fs.rmSync(tmpRoot, { recursive: true, force: true }); } catch (e) { }
   }
 }
 
@@ -505,6 +635,30 @@ app.get('/api/submissions', authMiddleware, async (req, res) => {
   }
 });
 
+// Main submission runner that dispatches to language-specific runners
+async function runSubmission({ language, code, tests, timeLimitMs, memoryLimitMb, outputLimitBytes, funcName }) {
+  if (!language || !code || !tests) {
+    throw new Error('language, code, and tests are required');
+  }
+
+  switch (language.toLowerCase()) {
+    case 'java':
+      return await runJava(code, tests);
+    case 'c':
+      return await runC(code, tests);
+    case 'cpp':
+    case 'c++':
+      return await runCpp(code, tests);
+    case 'python':
+      return await runPython(code, tests);
+    case 'javascript':
+    case 'js':
+      return await runNodeJS(code, tests, funcName);
+    default:
+      throw new Error(`Language "${language}" is not supported`);
+  }
+}
+
 // Optional Docker-backed secure execution endpoint
 app.post('/execute', async (req, res) => {
   try {
@@ -514,7 +668,7 @@ app.post('/execute', async (req, res) => {
     const results = await runSubmission({ language, code, tests, timeLimitMs: timeLimitMs || 1000, memoryLimitMb: memoryLimitMb || 256, outputLimitBytes: outputLimitBytes || 65536, funcName });
     return res.json({ results });
   } catch (e) {
-    console.error('Docker execution error:', e);
+    console.error('Execution error:', e);
     return res.status(500).json({ error: String(e) });
   }
 });
