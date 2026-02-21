@@ -22,6 +22,7 @@ A secure, fair, and immersive coding assessment platform with authentication, re
 ### 🔐 Authentication System
 - **User Registration**: Secure signup with email validation
 - **Login**: JWT-based authentication with 7-day token expiration
+- **Google OAuth**: Seamless login with Google accounts
 - **Password Management**: 
   - Secure password hashing (bcrypt with 10 rounds)
   - Forgot password with email-based reset
@@ -67,8 +68,8 @@ A secure, fair, and immersive coding assessment platform with authentication, re
 - **Runtime**: Node.js (ES6 modules)
 - **Framework**: Express.js 4.18.2
 - **Database**: PostgreSQL with pg 8.10.0
-- **Authentication**: JWT (jsonwebtoken 9.0.0)
-- **Security**: Bcrypt 5.1.0, Helmet 7.0.0
+- **Authentication**: JWT (jsonwebtoken 9.0.0), Passport.js with Google OAuth 2.0
+- **Security**: Bcrypt 5.1.0, Helmet 6.0.1
 - **Email**: SendGrid @sendgrid/mail 7.7.0
 - **Validation**: express-validator 7.0.0
 
@@ -97,18 +98,19 @@ coding-platform/
 │   ├── Dockerfile                      # Container definition
 │   └── src/
 │       ├── config/
-│       │   ├── db.js                 # PostgreSQL connection pool
-│       │   └── init.sql              # Database schema
+│       │   ├── passport.js            # Google OAuth configuration
+│       │   └── db.js                  # PostgreSQL connection pool
 │       ├── controllers/
-│       │   └── authController.js     # Auth business logic
+│       │   ├── authController.js      # Local auth business logic
+│       │   └── googleAuthController.js # Google OAuth logic
 │       ├── middleware/
-│       │   └── authMiddleware.js     # JWT verification
+│       │   └── authMiddleware.js      # JWT verification
 │       ├── models/
-│       │   └── userModel.js          # Database queries
+│       │   └── User.js                # PostgreSQL user schema
 │       ├── routes/
-│       │   └── authRoutes.js         # Authentication endpoints
+│       │   └── authRoutes.js          # Authentication endpoints
 │       └── utils/
-│           └── sendEmail.js          # SendGrid integration
+│           └── sendEmail.js           # SendGrid integration
 │
 ├── src/                                 # Frontend application
 │   ├── App.js                          # Main React component

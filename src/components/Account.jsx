@@ -62,7 +62,21 @@ export default function Account({ token, onLogout }) {
       {error && <div style={{ color: 'red', marginBottom: '10px' }}>{error}</div>}
       {profile ? (
         <div>
-          <div><strong>{profile.name || profile.email}</strong></div>
+          <div style={{ display: 'flex', alignItems: 'center', marginBottom: 8 }}>
+            {profile.profilePicture && (
+              <img 
+                src={profile.profilePicture} 
+                alt="Profile" 
+                style={{ width: 40, height: 40, borderRadius: '50%', marginRight: 12 }}
+              />
+            )}
+            <div>
+              <div><strong>{profile.name || profile.email}</strong></div>
+              <div style={{ fontSize: '12px', color: '#666' }}>
+                Signed in with {profile.authProvider === 'google' ? 'Google' : 'Email'}
+              </div>
+            </div>
+          </div>
           <div>Email: {profile.email}</div>
           {profile.createdAt && <div>Member since: {new Date(profile.createdAt).toLocaleString()}</div>}
           <div style={{ marginTop: 12 }}>

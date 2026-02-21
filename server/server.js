@@ -9,6 +9,7 @@ import { spawn } from 'child_process';
 import dotenv from 'dotenv';
 import { fileURLToPath } from 'url';
 import pool from './src/config/db.js';
+import passport from './src/config/passport.js';
 
 // Define __dirname and __filename for ES modules
 const __filename = fileURLToPath(import.meta.url);
@@ -45,7 +46,10 @@ const initializeDatabase = async () => {
         id SERIAL PRIMARY KEY,
         name VARCHAR(100),
         email VARCHAR(100) UNIQUE NOT NULL,
-        password VARCHAR(255) NOT NULL,
+        password VARCHAR(255),
+        google_id VARCHAR(255),
+        profile_picture TEXT,
+        auth_provider VARCHAR(20) DEFAULT 'local',
         password_reset_token VARCHAR(255),
         password_reset_expiry TIMESTAMP,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -54,18 +58,19 @@ const initializeDatabase = async () => {
     `);
     console.log('✓ Users table initialized');
 
-    // Add password reset columns if they don't exist
+    // Add new columns if they don't exist (for existing databases)
     try {
       await pool.query(`
-        ALTER TABLE users 
-        ADD COLUMN IF NOT EXISTS password_reset_token VARCHAR(255),
-        ADD COLUMN IF NOT EXISTS password_reset_expiry TIMESTAMP;
+        ALTER TABLE users
+        ADD COLUMN IF NOT EXISTS google_id VARCHAR(255),
+        ADD COLUMN IF NOT EXISTS profile_picture TEXT,
+        ADD COLUMN IF NOT EXISTS auth_provider VARCHAR(20) DEFAULT 'local';
       `);
-      console.log('✓ Password reset columns added');
+      console.log('✓ Google OAuth columns added');
     } catch (err) {
       // Columns might already exist, which is fine
       if (!err.message.includes('already exists')) {
-        console.log('✓ Password reset columns verified');
+        console.log('✓ Google OAuth columns verified');
       }
     }
   } catch (error) {
@@ -124,6 +129,9 @@ const app = express();
 app.use(helmet());
 app.use(cors());
 app.use(bodyParser.json({ limit: '300kb' }));
+
+// Initialize Passport
+app.use(passport.initialize());
 
 // Add CSP and cross-origin headers
 app.use((req, res, next) => {

@@ -9,6 +9,7 @@ import './App.css';
 import AuthForm from './components/AuthForm';
 import Account from './components/Account';
 import { allProblems } from './problems';
+import authService from './services/authService';
 
 function App() {
   const [currentView, setCurrentView] = useState('home');
@@ -85,6 +86,33 @@ function twoSum(nums, target) {
     }
     
   }, [language, currentProblem, currentView]);
+
+  // Handle Google OAuth callback
+  useEffect(() => {
+    const handleGoogleCallback = async () => {
+      const urlParams = new URLSearchParams(window.location.search);
+      const token = urlParams.get('token');
+      const error = urlParams.get('error');
+
+      if (token) {
+        try {
+          // Handle successful OAuth callback
+          const result = await authService.handleGoogleCallback();
+          setToken(result.token);
+          // Redirect to account view or wherever appropriate
+          setCurrentView('account');
+        } catch (err) {
+          console.error('OAuth callback error:', err);
+          // Could show error message to user
+        }
+      } else if (error) {
+        console.error('OAuth error:', decodeURIComponent(error));
+        // Could show error message to user
+      }
+    };
+
+    handleGoogleCallback();
+  }, []); // Run once on mount
 
 
   const enterFullscreen = () => {

@@ -172,26 +172,61 @@ const authService = {
     }
   },
 
-  // Reset Password - Update password with reset token
-  resetPassword: async (token, email, newPassword) => {
+  // Google OAuth sign in
+  googleSignIn: async () => {
     try {
-      const response = await fetch(`${API_BASE_URL}/auth/reset-password`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ token, email, newPassword }),
-      });
+      // Redirect to Google OAuth endpoint
+      window.location.href = `${API_BASE_URL}/auth/google`;
+    } catch (error) {
+      console.error('Google sign in error:', error);
+      throw error;
+    }
+  },
 
-      const data = await response.json();
+  // Handle Google OAuth callback (called when user returns from Google OAuth)
+  handleGoogleCallback: () => {
+    try {
+      // Get the current URL parameters
+      const urlParams = new URLSearchParams(window.location.search);
+      const token = urlParams.get('token');
+      const userData = urlParams.get('user');
+      const error = urlParams.get('error');
 
-      if (!response.ok) {
-        throw new Error(data.message || 'Failed to reset password');
+      if (error) {
+        throw new Error(decodeURIComponent(error));
       }
 
-      return data;
+      if (!token) {
+        throw new Error('No token received from Google OAuth');
+      }
+
+      // Store token in localStorage
+      localStorage.setItem('cp_token', token);
+
+      let user;
+      if (userData) {
+        try {
+          user = JSON.parse(decodeURIComponent(userData));
+          localStorage.setItem('cp_user', JSON.stringify({
+            id: user.id,
+            name: user.name,
+            email: user.email,
+            profilePicture: user.profilePicture,
+            authProvider: user.authProvider,
+          }));
+        } catch (parseError) {
+          console.warn('Could not parse user data from URL');
+        }
+      }
+
+      // Clean up URL by removing query parameters
+      const url = new URL(window.location);
+      url.search = '';
+      window.history.replaceState({}, document.title, url);
+
+      return { token, user };
     } catch (error) {
-      console.error('Reset password error:', error);
+      console.error('Google callback error:', error);
       throw error;
     }
   },

@@ -37,17 +37,23 @@ export const signup = async (req, res) => {
 
         // Create new user
         const result = await pool.query(
-            'INSERT INTO users (name, email, password, created_at, updated_at) VALUES ($1, $2, $3, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP) RETURNING id, name, email',
-            [name, email, hashedPassword]
+            'INSERT INTO users (name, email, password, auth_provider, created_at, updated_at) VALUES ($1, $2, $3, $4, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP) RETURNING id, name, email, auth_provider',
+            [name, email, hashedPassword, 'local']
         );
-        
+
         const user = result.rows[0];
 
         // Create JWT token
-        const token = jwt.sign({ id: user.id, email: user.email }, JWT_SECRET, { expiresIn: '7d' });
+        const token = jwt.sign({ userId: user.id, email: user.email }, JWT_SECRET, { expiresIn: '7d' });
 
         // Return user info and token
-        res.status(201).json({ id: user.id, name: user.name, email: user.email, token });
+        res.status(201).json({
+            id: user.id,
+            name: user.name,
+            email: user.email,
+            authProvider: user.auth_provider,
+            token
+        });
     } catch (error) {
         console.error('Signup error:', error);
         res.status(500).json({ message: 'Server error' });
@@ -65,13 +71,17 @@ export const signin = async (req, res) => {
 
     try {
         // Find user by email
-        const result = await pool.query('SELECT id, email, name, password FROM users WHERE email = $1', [email]);
-        
+        const result = await pool.query('SELECT id, email, name, password, auth_provider FROM users WHERE email = $1', [email]);
+
         if (result.rows.length === 0) {
             return res.status(400).json({ message: 'Invalid credentials' });
         }
 
         const user = result.rows[0];
+
+        if (user.auth_provider !== 'local') {
+            return res.status(400).json({ message: 'Please use Google OAuth to sign in' });
+        }
 
         // Check password
         const isMatch = await bcrypt.compare(password, user.password);
@@ -80,10 +90,16 @@ export const signin = async (req, res) => {
         }
 
         // Create JWT token
-        const token = jwt.sign({ id: user.id, email: user.email }, JWT_SECRET, { expiresIn: '7d' });
+        const token = jwt.sign({ userId: user.id, email: user.email }, JWT_SECRET, { expiresIn: '7d' });
 
         // Return user info and token
-        res.status(200).json({ id: user.id, name: user.name, email: user.email, token });
+        res.status(200).json({
+            id: user.id,
+            name: user.name,
+            email: user.email,
+            authProvider: user.auth_provider,
+            token
+        });
     } catch (error) {
         console.error('Signin error:', error);
         res.status(500).json({ message: 'Server error' });
@@ -100,18 +116,20 @@ export const signout = (req, res) => {
 export const getUserProfile = async (req, res) => {
     try {
         // req.user is set by authMiddleware
-        const result = await pool.query('SELECT id, name, email, created_at FROM users WHERE id = $1', [req.user.id]);
-        
+        const result = await pool.query('SELECT id, name, email, auth_provider, profile_picture, created_at FROM users WHERE id = $1', [req.user.userId]);
+
         if (result.rows.length === 0) {
             return res.status(404).json({ message: 'User not found' });
         }
 
         const user = result.rows[0];
 
-        res.status(200).json({ 
-            id: user.id, 
-            name: user.name, 
+        res.status(200).json({
+            id: user.id,
+            name: user.name,
             email: user.email,
+            authProvider: user.auth_provider,
+            profilePicture: user.profile_picture,
             createdAt: user.created_at
         });
     } catch (error) {
@@ -130,15 +148,19 @@ export const forgotPassword = async (req, res) => {
 
     try {
         // Check if user exists
-        const result = await pool.query('SELECT id, name, email FROM users WHERE email = $1', [email]);
-        
+        const result = await pool.query('SELECT id, name, email, auth_provider FROM users WHERE email = $1', [email]);
+
         if (result.rows.length === 0) {
             // Don't reveal if email exists (security best practice)
             return res.status(200).json({ message: 'If email exists, reset link has been sent' });
         }
 
         const user = result.rows[0];
-        
+
+        if (user.auth_provider !== 'local') {
+            return res.status(400).json({ message: 'Password reset not available for OAuth users' });
+        }
+
         // Generate reset token
         const resetToken = generateResetToken();
         const hashedToken = hashToken(resetToken);
@@ -158,7 +180,7 @@ export const forgotPassword = async (req, res) => {
             console.warn('⚠ Email sending skipped (development mode)');
         }
 
-        res.status(200).json({ 
+        res.status(200).json({
             message: 'If email exists, reset link has been sent. Check your inbox!'
         });
     } catch (error) {
@@ -166,7 +188,6 @@ export const forgotPassword = async (req, res) => {
         res.status(500).json({ message: 'Server error' });
     }
 };
-    
 
 // Reset Password - Verify token and update password
 export const resetPassword = async (req, res) => {
@@ -185,7 +206,7 @@ export const resetPassword = async (req, res) => {
 
         // Find user with matching reset token
         const result = await pool.query(
-            'SELECT id, email, password_reset_token, password_reset_expiry FROM users WHERE email = $1',
+            'SELECT id, email, password_reset_token, password_reset_expiry, auth_provider FROM users WHERE email = $1',
             [email]
         );
 
@@ -194,6 +215,10 @@ export const resetPassword = async (req, res) => {
         }
 
         const user = result.rows[0];
+
+        if (user.auth_provider !== 'local') {
+            return res.status(400).json({ message: 'Password reset not available for OAuth users' });
+        }
 
         // Check if token matches and hasn't expired
         if (user.password_reset_token !== hashedToken) {
